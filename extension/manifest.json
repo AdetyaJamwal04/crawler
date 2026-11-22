@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "MediaFlow - Universal Media Sniffer & Downloader",
+  "version": "1.0.0",
+  "description": "Sniff and download video, audio, HLS streams (.m3u8), and media directly from any webpage in your browser.",
+  "permissions": [
+    "webRequest",
+    "declarativeNetRequest",
+    "downloads",
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "MediaFlow Media Downloader",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

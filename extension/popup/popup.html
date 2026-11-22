@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MediaFlow Downloader</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header -->
+    <header class="popup-header">
+      <div class="logo-area">
+        <div class="logo-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+        </div>
+        <div class="logo-text">
+          <h1>MediaFlow</h1>
+          <span class="tagline">Media Sniffer & Downloader</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="rescan-btn" class="btn-icon" title="Rescan Active Page">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Tab / Filter Navigation -->
+    <div class="filter-bar">
+      <div class="filter-chips">
+        <button class="filter-chip active" data-filter="all">All (<span id="count-all">0</span>)</button>
+        <button class="filter-chip" data-filter="video">Videos (<span id="count-video">0</span>)</button>
+        <button class="filter-chip" data-filter="audio">Audio (<span id="count-audio">0</span>)</button>
+      </div>
+      <button id="download-all-btn" class="btn-xs btn-primary hidden">Download All</button>
+    </div>
+
+    <!-- Active Stream Progress (for HLS) -->
+    <div id="hls-progress-card" class="hls-card hidden">
+      <div class="hls-info">
+        <span id="hls-msg" class="hls-msg">Downloading stream...</span>
+        <span id="hls-pct" class="hls-pct">0%</span>
+      </div>
+      <div class="progress-bar-bg">
+        <div id="hls-bar-fill" class="progress-bar-fill" style="width: 0%"></div>
+      </div>
+    </div>
+
+    <!-- Detected Media List -->
+    <div id="media-list" class="media-list">
+      <!-- Media Items dynamically populated here -->
+    </div>
+
+    <!-- Empty State -->
+    <div id="empty-state" class="empty-state">
+      <div class="empty-icon">🎬</div>
+      <p class="empty-title">No Media Detected Yet</p>
+      <p class="empty-desc">Play a video/audio on the page or click Rescan to sniff media.</p>
+      <button id="empty-rescan-btn" class="btn-secondary">🕷️ Scan Page Now</button>
+    </div>
+
+    <!-- Direct URL Downloader Accordion -->
+    <details class="direct-downloader">
+      <summary>Download from Direct URL</summary>
+      <div class="direct-body">
+        <input type="url" id="direct-url-input" placeholder="Paste .mp4, .mp3, or .m3u8 URL" />
+        <button id="direct-download-btn" class="btn-primary">Download</button>
+      </div>
+    </details>
+  </div>
+
+  <script src="../lib/hls-downloader.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
