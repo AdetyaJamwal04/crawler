@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import requests
 
-from crawler import MediaCrawler, download_stream_with_ffmpeg, STREAM_EXTS
+from crawler import MediaCrawler, download_stream_with_ffmpeg, is_safe_url, STREAM_EXTS
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -70,6 +70,21 @@ def sanitize_filename(name: str) -> str:
     return clean[:200]
 
 
+def format_content_disposition(filename: str, disposition_type: str = "attachment") -> str:
+    """
+    Format Content-Disposition header conforming to RFC 6266 / RFC 5987.
+    The standard filename="..." attribute is restricted to ASCII to prevent
+    UnicodeEncodeError in latin-1 HTTP headers, while filename*=UTF-8''... carries
+    the full international UTF-8 filename.
+    """
+    clean_filename = sanitize_filename(filename)
+    ascii_fallback = clean_filename.encode("ascii", "replace").decode("ascii").replace("?", "_").replace('"', "")
+    if not ascii_fallback.strip():
+        ascii_fallback = "downloaded_media"
+    encoded_utf8 = urllib.parse.quote(clean_filename, encoding="utf-8")
+    return f'{disposition_type}; filename="{ascii_fallback}"; filename*=UTF-8\'\'{encoded_utf8}'
+
+
 def extract_filename_from_headers_or_url(url: str, headers: Dict[str, str]) -> str:
     """Extract or deduce appropriate filename from HTTP headers or URL."""
     # 1. Check Content-Disposition
@@ -115,10 +130,10 @@ def extract_filename_from_headers_or_url(url: str, headers: Dict[str, str]) -> s
 
 def inspect_media_url(url: str, timeout: int = 10) -> Dict[str, Any]:
     """Inspect a media URL using HEAD or partial GET request to extract metadata."""
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return {"ok": False, "error": "Invalid URL scheme. Only HTTP and HTTPS are supported."}
+    if not is_safe_url(url):
+        return {"ok": False, "error": "Invalid or restricted URL scheme/target."}
 
+    parsed = urllib.parse.urlparse(url)
     origin = f"{parsed.scheme}://{parsed.netloc}"
     req_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -191,8 +206,9 @@ def inspect_media_url(url: str, timeout: int = 10) -> Dict[str, Any]:
             content_type.startswith("video/")
             or content_type.startswith("audio/")
             or content_type.startswith("image/")
-            or content_type in ("application/ogg", "application/vnd.apple.mpegurl")
+            or content_type in ("application/ogg", "application/vnd.apple.mpegurl", "application/x-mpegurl", "application/dash+xml")
             or any(filename.lower().endswith(ext) for ext in EXTRA_MIME_TYPES)
+            or any(filename.lower().endswith(ext) for ext in STREAM_EXTS)
         )
 
         return {
@@ -213,13 +229,25 @@ def inspect_media_url(url: str, timeout: int = 10) -> Dict[str, Any]:
 
 
 def get_ytdlp_bin() -> Optional[str]:
-    """Get the path to the best available yt-dlp binary (preferring project venv)."""
+    """Get the path to the best available yt-dlp binary (checking sys.prefix, project venv, and PATH)."""
+    # 1. Check active virtual environment
+    if sys.prefix != sys.base_prefix:
+        venv_bin = Path(sys.prefix) / "bin" / "yt-dlp"
+        if venv_bin.is_file():
+            return str(venv_bin)
+        venv_scripts = Path(sys.prefix) / "Scripts" / "yt-dlp.exe"
+        if venv_scripts.is_file():
+            return str(venv_scripts)
+
+    # 2. Check local project .venv
     local_ytdlp = BASE_DIR / ".venv" / "Scripts" / "yt-dlp.exe"
     if local_ytdlp.is_file():
         return str(local_ytdlp)
     local_ytdlp_nix = BASE_DIR / ".venv" / "bin" / "yt-dlp"
     if local_ytdlp_nix.is_file():
         return str(local_ytdlp_nix)
+
+    # 3. Check system PATH
     return shutil.which("yt-dlp")
 
 
@@ -259,10 +287,8 @@ def extract_platform_media(url: str) -> Dict[str, Any]:
         thumbnail = info.get("thumbnail")
         formats = []
 
-        # Find best direct video/audio download link if available
         direct_url = info.get("url")
 
-        # Pick simplified clean format options
         raw_formats = info.get("formats", [])
         for f in raw_formats:
             f_url = f.get("url")
@@ -288,6 +314,7 @@ def extract_platform_media(url: str) -> Dict[str, Any]:
 
         return {
             "ok": True,
+            "is_platform": True,
             "title": title,
             "filename": sanitize_filename(f"{title}.{ext}"),
             "ext": ext,
@@ -315,7 +342,10 @@ class MediaServerHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Range")
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def do_OPTIONS(self) -> None:
         """Handle CORS pre-flight requests."""
@@ -357,7 +387,7 @@ class MediaServerHandler(BaseHTTPRequestHandler):
             self.send_json(result, 200 if result.get("ok") else 400)
             return
 
-        # 3. API: Platform Extraction (yt-dlp)
+        # 4. API: Platform Extraction (yt-dlp)
         if path == "/api/extract":
             url = query.get("url", [""])[0].strip()
             if not url:
@@ -367,7 +397,7 @@ class MediaServerHandler(BaseHTTPRequestHandler):
             self.send_json(result, 200 if result.get("ok") else 400)
             return
 
-        # 4. API: Stream Download
+        # 5. API: Stream Download
         if path == "/api/download":
             url = query.get("url", [""])[0].strip()
             custom_name = query.get("name", [""])[0].strip()
@@ -378,7 +408,12 @@ class MediaServerHandler(BaseHTTPRequestHandler):
             self.stream_download(url, custom_name, referer)
             return
 
-        # 5. Static Files Serving
+        # 6. Unmatched API route: return JSON 404
+        if path.startswith("/api/"):
+            self.send_json({"ok": False, "error": f"API endpoint '{path}' not found."}, 404)
+            return
+
+        # 7. Static Files Serving
         self.serve_static(path)
 
     def serve_static(self, path: str) -> None:
@@ -414,8 +449,11 @@ class MediaServerHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", f"{mime_type}; charset=utf-8" if "text" in mime_type or "javascript" in mime_type else mime_type)
             self.send_header("Content-Length", str(len(content)))
             self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(content)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
         except Exception as e:
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, f"Error reading file: {str(e)}")
 
@@ -437,9 +475,7 @@ class MediaServerHandler(BaseHTTPRequestHandler):
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "video/mp4")
                 self.send_header("Content-Length", str(file_size))
-                encoded_filename = urllib.parse.quote(filename)
-                disposition = f'attachment; filename="{filename}"; filename*=UTF-8\'\'{encoded_filename}'
-                self.send_header("Content-Disposition", disposition)
+                self.send_header("Content-Disposition", format_content_disposition(filename))
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Access-Control-Expose-Headers", "Content-Disposition, Content-Length")
                 self.end_headers()
@@ -467,7 +503,6 @@ class MediaServerHandler(BaseHTTPRequestHandler):
                 return False
 
             resources = crawl_res["resources"]
-            # Look for video or stream first
             media_candidates = [r for r in resources if r.get("type") in ("video", "stream", "audio")]
             if not media_candidates:
                 media_candidates = resources
@@ -498,8 +533,7 @@ class MediaServerHandler(BaseHTTPRequestHandler):
                                 if "content-length" in r.headers:
                                     self.send_header("Content-Length", r.headers["content-length"])
                                 fn = sanitize_filename(cand_title) or "downloaded_media"
-                                disposition = f'attachment; filename="{fn}"; filename*=UTF-8\'\'{urllib.parse.quote(fn)}'
-                                self.send_header("Content-Disposition", disposition)
+                                self.send_header("Content-Disposition", format_content_disposition(fn))
                                 self.send_header("Access-Control-Allow-Origin", "*")
                                 self.send_header("Access-Control-Expose-Headers", "Content-Disposition, Content-Length")
                                 self.end_headers()
@@ -559,9 +593,7 @@ class MediaServerHandler(BaseHTTPRequestHandler):
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(file_size))
-                encoded_filename = urllib.parse.quote(filename)
-                disposition = f'attachment; filename="{filename}"; filename*=UTF-8\'\'{encoded_filename}'
-                self.send_header("Content-Disposition", disposition)
+                self.send_header("Content-Disposition", format_content_disposition(filename))
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Access-Control-Expose-Headers", "Content-Disposition, Content-Length")
                 self.end_headers()
@@ -581,7 +613,7 @@ class MediaServerHandler(BaseHTTPRequestHandler):
             return False
 
     def _stream_response(self, upstream: requests.Response, custom_name: str = "") -> None:
-        """Stream an active requests response to client with attachment headers."""
+        """Stream an active requests response to client with safe attachment headers."""
         headers = {k.lower(): v for k, v in upstream.headers.items()}
         content_type = headers.get("content-type", "application/octet-stream")
         content_length = headers.get("content-length")
@@ -602,9 +634,7 @@ class MediaServerHandler(BaseHTTPRequestHandler):
         if "accept-ranges" in headers:
             self.send_header("Accept-Ranges", headers["accept-ranges"])
 
-        encoded_filename = urllib.parse.quote(filename)
-        disposition = f'attachment; filename="{filename}"; filename*=UTF-8\'\'{encoded_filename}'
-        self.send_header("Content-Disposition", disposition)
+        self.send_header("Content-Disposition", format_content_disposition(filename))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Expose-Headers", "Content-Disposition, Content-Length, Content-Range")
         self.end_headers()
@@ -618,10 +648,11 @@ class MediaServerHandler(BaseHTTPRequestHandler):
 
     def stream_download(self, url: str, custom_name: str = "", referer: str = "") -> None:
         """Stream remote media file directly to client with attachment header."""
-        parsed = urllib.parse.urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            self.send_json({"ok": False, "error": "Invalid URL scheme"}, 400)
+        if not is_safe_url(url):
+            self.send_json({"ok": False, "error": "Invalid or restricted URL scheme/target."}, 400)
             return
+
+        parsed = urllib.parse.urlparse(url)
 
         # Check if URL is an HLS or DASH stream
         path_lower = parsed.path.lower()

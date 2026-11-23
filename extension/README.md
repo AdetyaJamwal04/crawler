@@ -7,7 +7,8 @@ A fast, zero-server browser extension that sniffs and downloads media (MP4, WebM
 ## ✨ Features
 - **Passive Network Sniffing**: Sniffs video/audio requests (`.mp4`, `.webm`, `.m3u8`, `.mpd`, `.mp3`) directly as pages load.
 - **Active DOM & Player Inspector**: Scans `<video>`, `<audio>`, `<source>`, OpenGraph tags, JSON-LD, and embedded player configs.
-- **In-Browser HLS Stitcher**: Sequentially downloads `.m3u8` segment chunks with concurrency and stitches them into a `.ts` file entirely in memory with no backend server.
+- **In-Browser HLS Stitcher**: Sequentially downloads `.m3u8` segment chunks with concurrency, supports AES-128 decryption, and stitches them into a `.ts` file entirely in memory with no backend server.
+- **Persistent Session State**: Maintains sniffed media across service worker sleep cycles via `chrome.storage.session`.
 - **$0 Hosting**: Runs 100% locally in the browser with zero cloud costs or infrastructure maintenance.
 
 ---
@@ -21,10 +22,7 @@ A fast, zero-server browser extension that sniffs and downloads media (MP4, WebM
    *(or `edge://extensions/` in Microsoft Edge)*
 2. In the top-right corner, toggle **Developer mode** to **ON**.
 3. Click the **"Load unpacked"** button in the top-left.
-4. Select the `extension` folder located inside this project:
-   ```
-   C:\Users\Adetya\Desktop\crawler\extension
-   ```
+4. Select the `extension` folder located inside this project.
 5. Click **Select Folder**.
 6. Pin **MediaFlow** to your browser toolbar!
 
@@ -35,5 +33,5 @@ A fast, zero-server browser extension that sniffs and downloads media (MP4, WebM
 2. Play the media. The extension badge icon will update with the count of detected streams.
 3. Click the MediaFlow extension icon:
    - Preview discovered streams.
-   - Click **Download** to save standard video/audio or stream `.m3u8` directly.
+   - Click **Download** to save standard video/audio or stitch stream `.m3u8` directly.
    - Use **Copy Link** to share or inspect raw URLs.

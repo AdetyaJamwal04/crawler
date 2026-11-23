@@ -1,17 +1,22 @@
 /**
  * MediaFlow - Background Service Worker
  * Sniffs network traffic for video, audio, HLS (.m3u8), DASH (.mpd), and media streams.
- * Maintains a per-tab store of detected media resources.
+ * Maintains a per-tab store of detected media resources with session storage persistence.
  */
 
 const tabMediaStore = new Map();
 
+// Helper to check if chrome.storage.session is available (MV3)
+const storageSession = (typeof chrome !== "undefined" && chrome.storage && chrome.storage.session)
+  ? chrome.storage.session
+  : null;
+
 // File extensions and mime types to capture
 const MEDIA_EXTENSIONS = [
-  /\.(mp4|webm|mkv|mov|avi|flv|m4v)(\?.*)?$/i,
-  /\.(m3u8)(\?.*)?$/i,
-  /\.(mpd)(\?.*)?$/i,
-  /\.(mp3|wav|ogg|m4a|aac|flac)(\?.*)?$/i
+  /\.(mp4|webm|mkv|mov|avi|flv|m4v)(\?.*)?$/i, // 0: Video
+  /\.(m3u8)(\?.*)?$/i,                          // 1: HLS
+  /\.(mpd)(\?.*)?$/i,                           // 2: DASH
+  /\.(mp3|wav|ogg|m4a|aac|flac)(\?.*)?$/i       // 3: Audio
 ];
 
 const MEDIA_CONTENT_TYPES = [
@@ -30,14 +35,14 @@ function classifyMediaType(url, contentType = "") {
   if (cleanUrl.endsWith(".m3u8") || cType.includes("mpegurl")) {
     return { type: "video", format: "HLS (.m3u8)" };
   }
-  if (cleanUrl.endsWith(".mpd") || cType.includes("dash+xml")) {
+  if (cleanUrl.endsWith(".mpd") || cType.includes("dash+xml") || MEDIA_EXTENSIONS[2].test(url)) {
     return { type: "video", format: "DASH (.mpd)" };
   }
   if (MEDIA_EXTENSIONS[0].test(url) || cType.startsWith("video/")) {
     const ext = cleanUrl.split(".").pop() || "mp4";
     return { type: "video", format: ext.toUpperCase() };
   }
-  if (MEDIA_EXTENSIONS[2].test(url) || cType.startsWith("audio/")) {
+  if (MEDIA_EXTENSIONS[3].test(url) || cType.startsWith("audio/")) {
     const ext = cleanUrl.split(".").pop() || "mp3";
     return { type: "audio", format: ext.toUpperCase() };
   }
@@ -57,15 +62,17 @@ function getFilenameFromUrl(url, defaultExt = "mp4") {
   return `media_${Date.now()}.${defaultExt}`;
 }
 
-// Add detected media to tab store
-function addMediaForTab(tabId, item) {
+// Persist tab media item
+async function addMediaForTab(tabId, item) {
   if (!tabId || tabId < 0) return;
+
   if (!tabMediaStore.has(tabId)) {
     tabMediaStore.set(tabId, new Map());
   }
   const tabMap = tabMediaStore.get(tabId);
+
   if (!tabMap.has(item.url)) {
-    tabMap.set(item.url, {
+    const record = {
       id: Math.random().toString(36).substring(2, 9),
       url: item.url,
       title: item.title || getFilenameFromUrl(item.url, item.type === "audio" ? "mp3" : "mp4"),
@@ -74,9 +81,47 @@ function addMediaForTab(tabId, item) {
       size: item.size || null,
       source: item.source || "network",
       timestamp: Date.now()
-    });
+    };
+    tabMap.set(item.url, record);
     updateBadge(tabId);
+
+    // Sync to session storage if available
+    if (storageSession) {
+      const key = `tab_${tabId}`;
+      const itemsArray = Array.from(tabMap.values());
+      try {
+        await storageSession.set({ [key]: itemsArray });
+      } catch (_) {}
+    }
   }
+}
+
+// Retrieve media list for a tab
+async function getMediaForTab(tabId) {
+  if (!tabId) return [];
+
+  if (tabMediaStore.has(tabId) && tabMediaStore.get(tabId).size > 0) {
+    return Array.from(tabMediaStore.get(tabId).values());
+  }
+
+  if (storageSession) {
+    try {
+      const key = `tab_${tabId}`;
+      const data = await storageSession.get([key]);
+      if (data && data[key]) {
+        // Restore memory map
+        const map = new Map();
+        for (const item of data[key]) {
+          map.set(item.url, item);
+        }
+        tabMediaStore.set(tabId, map);
+        updateBadge(tabId);
+        return data[key];
+      }
+    } catch (_) {}
+  }
+
+  return [];
 }
 
 // Update icon badge count
@@ -130,31 +175,37 @@ chrome.webRequest.onHeadersReceived.addListener(
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === "loading") {
     tabMediaStore.delete(tabId);
+    if (storageSession) {
+      storageSession.remove(`tab_${tabId}`);
+    }
     updateBadge(tabId);
   }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabMediaStore.delete(tabId);
+  if (storageSession) {
+    storageSession.remove(`tab_${tabId}`);
+  }
 });
 
 // Messaging with popup and content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "get_tab_media") {
     const tabId = message.tabId;
-    const mediaList = tabMediaStore.has(tabId) 
-      ? Array.from(tabMediaStore.get(tabId).values()) 
-      : [];
-    sendResponse({ media: mediaList });
-    return true;
+    getMediaForTab(tabId).then((mediaList) => {
+      sendResponse({ media: mediaList });
+    });
+    return true; // Keep message channel open for async response
   }
 
   if (message.action === "report_media") {
     const tabId = sender.tab ? sender.tab.id : message.tabId;
     if (tabId && message.items && Array.isArray(message.items)) {
-      for (const item of message.items) {
-        addMediaForTab(tabId, item);
-      }
+      Promise.all(message.items.map((item) => addMediaForTab(tabId, item))).then(() => {
+        sendResponse({ ok: true });
+      });
+      return true;
     }
     sendResponse({ ok: true });
     return true;
@@ -174,6 +225,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "clear_tab_media") {
     if (message.tabId) {
       tabMediaStore.delete(message.tabId);
+      if (storageSession) {
+        storageSession.remove(`tab_${message.tabId}`);
+      }
       updateBadge(message.tabId);
     }
     sendResponse({ ok: true });

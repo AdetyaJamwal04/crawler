@@ -10,6 +10,7 @@
   let activeTabId = null;
   let allMedia = [];
   let currentFilter = "all";
+  let isHlsDownloading = false;
 
   // Elements
   const mediaList = document.getElementById("media-list");
@@ -55,9 +56,15 @@
       });
     });
 
-    downloadAllBtn.addEventListener("click", () => {
+    downloadAllBtn.addEventListener("click", async () => {
       const items = getFilteredItems();
-      items.forEach((item) => downloadMedia(item));
+      downloadAllBtn.disabled = true;
+      for (const item of items) {
+        await downloadMedia(item);
+        // Small delay between downloads to prevent browser throttling
+        await new Promise((r) => setTimeout(r, 400));
+      }
+      downloadAllBtn.disabled = false;
     });
 
     directDownloadBtn.addEventListener("click", () => {
@@ -123,6 +130,16 @@
     return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
   }
 
+  function escapeHtml(str) {
+    if (!str) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
   function renderMedia() {
     const items = getFilteredItems();
     mediaList.innerHTML = "";
@@ -141,20 +158,25 @@
       const badgeClass = isVideo ? "badge-video" : "badge-audio";
       const sizeText = item.size ? formatBytes(item.size) : "";
 
+      const safeTitle = escapeHtml(item.title || "media");
+      const safeUrl = escapeHtml(item.url || "");
+      const safeFormat = escapeHtml(item.format || "MEDIA");
+      const safeSource = escapeHtml(item.source || "Network");
+
       card.innerHTML = `
         <div class="media-item-header">
-          <div class="media-item-title" title="${item.url}">${item.title}</div>
-          <span class="media-badge ${badgeClass}">${item.format || "MEDIA"}</span>
+          <div class="media-item-title" title="${safeUrl}">${safeTitle}</div>
+          <span class="media-badge ${badgeClass}">${safeFormat}</span>
         </div>
         <div class="media-meta-row">
-          <span>Source: ${item.source || "Network"}</span>
+          <span>Source: ${safeSource}</span>
           <span>${sizeText}</span>
         </div>
         <div class="media-actions">
-          <button class="btn-action btn-download" data-id="${item.id}">
+          <button class="btn-action btn-download" type="button">
             ⬇️ Download
           </button>
-          <button class="btn-action btn-copy" data-url="${item.url}">
+          <button class="btn-action btn-copy" type="button">
             📋 Copy Link
           </button>
         </div>
@@ -174,10 +196,14 @@
 
   // Handle download dispatch
   async function downloadMedia(item) {
-    const isHls = item.format && item.format.includes("HLS") || item.url.includes(".m3u8");
+    const isHls = (item.format && item.format.includes("HLS")) || item.url.includes(".m3u8");
 
     if (isHls && window.HlsDownloader) {
-      // In-browser HLS segment downloader
+      if (isHlsDownloading) {
+        alert("An HLS stream download is already in progress. Please wait for it to complete.");
+        return;
+      }
+      isHlsDownloading = true;
       hlsCard.classList.remove("hidden");
       try {
         await window.HlsDownloader.downloadHls(item.url, item.title, (p) => {
@@ -185,12 +211,16 @@
           hlsPct.textContent = `${p.percent}%`;
           hlsBarFill.style.width = `${p.percent}%`;
           if (p.state === "complete") {
-            setTimeout(() => hlsCard.classList.add("hidden"), 3000);
+            setTimeout(() => {
+              hlsCard.classList.add("hidden");
+              isHlsDownloading = false;
+            }, 3000);
           }
         });
       } catch (err) {
-        hlsMsg.textContent = `Error: ${err.message}`;
+        hlsMsg.textContent = `Error: ${err.message || "Download failed"}`;
         hlsPct.textContent = "";
+        isHlsDownloading = false;
       }
     } else {
       // Standard browser download
