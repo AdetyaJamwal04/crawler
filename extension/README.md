@@ -35,3 +35,9 @@ A fast, zero-server browser extension that sniffs and downloads media (MP4, WebM
    - Preview discovered streams.
    - Click **Download** to save standard video/audio or stitch stream `.m3u8` directly.
    - Use **Copy Link** to share or inspect raw URLs.
+
+---
+
+## 📄 License
+Licensed under the [MIT License](../LICENSE).
+

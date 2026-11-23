@@ -124,6 +124,7 @@ crawler/
 ├── crawler.py                 # Python web crawler, DOM/JS regex parser & HLS muxer
 ├── server.py                  # Multi-threaded streaming server, crawler & download API
 ├── requirements.txt           # Python dependencies
+├── LICENSE                    # MIT License
 ├── run.sh                     # Linux / macOS launcher script
 ├── run.ps1                    # Windows PowerShell launcher
 ├── run.bat                    # Windows Batch launcher
@@ -136,3 +137,10 @@ crawler/
     ├── test_server.py         # Pytest & unittest server test suite
     └── test_crawler.py        # Crawler & extraction test suite
 ```
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+
