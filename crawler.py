@@ -6,11 +6,13 @@ and handles anti-hotlink referers, cookies, and HLS/DASH streams.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import mimetypes
 import os
 import re
 import shutil
+import socket
 import subprocess
 import urllib.parse
 from dataclasses import asdict, dataclass, field
@@ -24,10 +26,61 @@ AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".opus", ".wma"}
 STREAM_EXTS = {".m3u8", ".mpd"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp", ".avif"}
 
+STREAM_MIME_TYPES = {
+    "application/vnd.apple.mpegurl",
+    "application/x-mpegurl",
+    "application/dash+xml",
+}
+
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+
+# Block cloud metadata addresses and special restricted IPs
+BLOCKED_IP_NETWORKS = [
+    ipaddress.ip_network("169.254.169.254/32"),  # AWS/GCP/Azure instance metadata
+    ipaddress.ip_network("169.254.0.0/16"),      # IPv4 Link-local
+    ipaddress.ip_network("fe80::/10"),           # IPv6 Link-local
+    ipaddress.ip_network("0.0.0.0/32"),
+]
+
+
+def is_safe_url(url: str, allow_local: bool = True) -> bool:
+    """
+    Validate that a URL uses http/https and does not target restricted
+    cloud metadata or dangerous internal services.
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+
+        # Check cloud metadata endpoint directly
+        if hostname in ("169.254.169.254", "metadata.google.internal", "instance-data"):
+            return False
+
+        # Attempt to resolve IP to check against blocked ranges
+        try:
+            addr_info = socket.getaddrinfo(hostname, None)
+            for item in addr_info:
+                ip_str = item[4][0]
+                ip_obj = ipaddress.ip_address(ip_str)
+                for blocked_net in BLOCKED_IP_NETWORKS:
+                    if ip_obj in blocked_net:
+                        return False
+                if not allow_local and (ip_obj.is_loopback or ip_obj.is_private):
+                    return False
+        except (socket.gaierror, ValueError):
+            pass
+
+        return True
+    except Exception:
+        return False
 
 
 @dataclass
@@ -51,8 +104,9 @@ class MediaResource:
 class MediaCrawler:
     """Intelligent web crawler that analyzes pages for media resources."""
 
-    def __init__(self, timeout: int = 15):
+    def __init__(self, timeout: int = 15, allow_local: bool = True):
         self.timeout = timeout
+        self.allow_local = allow_local
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": DEFAULT_USER_AGENT,
@@ -69,28 +123,56 @@ class MediaCrawler:
 
     def crawl(self, page_url: str, depth: int = 1) -> Dict[str, Any]:
         """Crawl a webpage and discover all media files and streams."""
-        parsed = urllib.parse.urlparse(page_url)
-        if parsed.scheme not in ("http", "https"):
-            return {"ok": False, "error": "Invalid URL scheme. Must be http or https."}
+        if not is_safe_url(page_url, allow_local=self.allow_local):
+            return {"ok": False, "error": "Invalid or restricted URL scheme/target."}
 
+        parsed = urllib.parse.urlparse(page_url)
         origin = f"{parsed.scheme}://{parsed.netloc}"
-        self.session.headers.update({"Referer": origin + "/", "Origin": origin})
+        req_headers = {"Referer": origin + "/", "Origin": origin}
 
         try:
-            resp = self.session.get(page_url, timeout=self.timeout, allow_redirects=True)
+            resp = self.session.get(page_url, headers=req_headers, timeout=self.timeout, allow_redirects=True)
         except requests.RequestException as e:
             return {"ok": False, "error": f"Failed to connect to page: {str(e)}"}
 
         final_url = resp.url
         content_type = resp.headers.get("content-type", "").lower()
+        clean_content_type = content_type.split(";")[0].strip()
+        parsed_final = urllib.parse.urlparse(final_url)
+        final_path_lower = parsed_final.path.lower()
 
-        # If the URL directly points to a media file, return it as a single discovered resource
-        if any(content_type.startswith(prefix) for prefix in ("video/", "audio/", "image/")):
-            ext = mimetypes.guess_extension(content_type.split(";")[0]) or ".media"
-            filename = os.path.basename(urllib.parse.urlparse(final_url).path) or f"media{ext}"
+        # If URL directly points to an HLS or DASH stream
+        is_direct_stream = (
+            any(clean_content_type == sm for sm in STREAM_MIME_TYPES)
+            or any(final_path_lower.endswith(ext) for ext in STREAM_EXTS)
+        )
+        if is_direct_stream:
+            ext = os.path.splitext(final_path_lower)[1].lstrip(".") or "m3u8"
+            filename = os.path.basename(parsed_final.path) or f"stream.{ext}"
+            res = MediaResource(
+                url=final_url,
+                type="stream",
+                format=ext,
+                title=filename,
+                source_tag="direct_stream_url",
+                referer=page_url,
+                is_stream=True,
+            )
+            return {
+                "ok": True,
+                "page_url": final_url,
+                "page_title": filename,
+                "count": 1,
+                "resources": [res.to_dict()],
+            }
+
+        # If URL directly points to a media file, return it as a single discovered resource
+        if any(clean_content_type.startswith(prefix) for prefix in ("video/", "audio/", "image/")):
+            ext = mimetypes.guess_extension(clean_content_type) or ".media"
+            filename = os.path.basename(parsed_final.path) or f"media{ext}"
             content_len = resp.headers.get("content-length")
             size = int(content_len) if content_len and content_len.isdigit() else None
-            mtype = "video" if "video" in content_type else "audio" if "audio" in content_type else "image"
+            mtype = "video" if "video" in clean_content_type else "audio" if "audio" in clean_content_type else "image"
             res = MediaResource(
                 url=final_url,
                 type=mtype,
@@ -136,19 +218,34 @@ class MediaCrawler:
             title: str = "",
             thumb: Optional[str] = None,
             is_stream: bool = False,
+            base_url: str = "",
         ) -> None:
-            if not url or url.startswith("data:") or url.startswith("javascript:"):
+            if not url or not isinstance(url, str):
                 return
-            full_url = urllib.parse.urljoin(final_url, url.strip())
+            clean_input_url = url.strip()
+            if clean_input_url.startswith(("data:", "javascript:", "blob:", "mailto:")):
+                return
+
+            # Unescape JS escaped slashes (e.g. https:\/\/...)
+            clean_input_url = clean_input_url.replace(r"\/", "/")
+
+            effective_base = base_url if base_url else final_url
+            try:
+                full_url = urllib.parse.urljoin(effective_base, clean_input_url)
+            except Exception:
+                return
+
             if full_url in seen_urls:
                 return
             seen_urls.add(full_url)
 
-            # Determine format
+            # Determine format based on URL path
             parsed_r = urllib.parse.urlparse(full_url)
             path_lower = parsed_r.path.lower()
             ext = os.path.splitext(path_lower)[1]
             fmt = ext.lstrip(".") if ext else mtype
+
+            detected_stream = is_stream or ext in STREAM_EXTS
 
             if not title:
                 base = os.path.basename(parsed_r.path)
@@ -156,13 +253,13 @@ class MediaCrawler:
 
             discovered.append(MediaResource(
                 url=full_url,
-                type=mtype,
+                type="stream" if detected_stream else mtype,
                 format=fmt,
                 title=title,
                 source_tag=source_tag,
-                referer=final_url,
+                referer=effective_base,
                 thumbnail=thumb,
-                is_stream=is_stream or ext in STREAM_EXTS,
+                is_stream=detected_stream,
             ))
 
         # 1. HTML5 <video> elements
@@ -170,13 +267,17 @@ class MediaCrawler:
             v_src = video.get("src") or video.get("data-src") or video.get("data-url")
             poster = video.get("poster")
             if v_src:
-                add_resource(v_src, "video", "video_tag", thumb=poster)
+                v_path = urllib.parse.urlparse(v_src).path.lower()
+                is_str = any(v_path.endswith(ext) for ext in STREAM_EXTS)
+                add_resource(v_src, "stream" if is_str else "video", "video_tag", thumb=poster, is_stream=is_str)
             for source in video.find_all("source"):
                 s_src = source.get("src") or source.get("data-src")
                 if s_src:
-                    s_type = source.get("type", "")
-                    mtype = "stream" if "x-mpegurl" in s_type or s_src.endswith(".m3u8") else "video"
-                    add_resource(s_src, mtype, "video_source", thumb=poster, is_stream=(mtype == "stream"))
+                    s_type = source.get("type", "").lower()
+                    s_path = urllib.parse.urlparse(s_src).path.lower()
+                    is_hls = "mpegurl" in s_type or "dash+xml" in s_type or any(s_path.endswith(ext) for ext in STREAM_EXTS)
+                    mtype = "stream" if is_hls else "video"
+                    add_resource(s_src, mtype, "video_source", thumb=poster, is_stream=is_hls)
 
         # 2. HTML5 <audio> elements
         for audio in soup.find_all("audio"):
@@ -213,40 +314,46 @@ class MediaCrawler:
                 pass
 
         # 5. Regex Deep Mining in Script Tags & HTML
-        # Look for inlined .mp4, .m3u8, .mpd, .webm, .mp3 links
+        # Look for inlined .mp4, .m3u8, .mpd, .webm, .mp3 links (handling JS escaped slashes)
+        unescaped_html = html_text.replace(r"\/", "/")
         media_regex = re.compile(
             r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|m3u8|mpd|mp3|wav|ogg|flac)(?:\?[^\s"\'<>]*)?',
             re.IGNORECASE,
         )
-        for match in media_regex.finditer(html_text):
+        for match in media_regex.finditer(unescaped_html):
             found_url = match.group(0)
-            url_clean = found_url.split("?")[0].lower()
-            if any(url_clean.endswith(ext) for ext in STREAM_EXTS):
+            url_clean_path = urllib.parse.urlparse(found_url).path.lower()
+            if any(url_clean_path.endswith(ext) for ext in STREAM_EXTS):
                 add_resource(found_url, "stream", "script_regex", is_stream=True)
-            elif any(url_clean.endswith(ext) for ext in VIDEO_EXTS):
+            elif any(url_clean_path.endswith(ext) for ext in VIDEO_EXTS):
                 add_resource(found_url, "video", "script_regex")
-            elif any(url_clean.endswith(ext) for ext in AUDIO_EXTS):
+            elif any(url_clean_path.endswith(ext) for ext in AUDIO_EXTS):
                 add_resource(found_url, "audio", "script_regex")
 
-        # 6. Embedded Player Iframes (e.g. Vimeo, YouTube, Player embeds)
+        # 6. Embedded Player Iframes (resolving relative URLs against iframe source URL)
         if depth > 0:
             for iframe in soup.find_all("iframe"):
                 src = iframe.get("src") or iframe.get("data-src")
                 if not src:
                     continue
-                full_iframe = urllib.parse.urljoin(final_url, src)
-                # If iframe is a video embed, optionally crawl iframe page
+                full_iframe = urllib.parse.urljoin(final_url, src.strip().replace(r"\/", "/"))
+                if not is_safe_url(full_iframe, allow_local=self.allow_local):
+                    continue
                 if any(k in full_iframe.lower() for k in ("embed", "player", "video")):
                     try:
                         iframe_resp = self.session.get(full_iframe, headers={"Referer": final_url}, timeout=6)
                         if iframe_resp.ok:
+                            iframe_base = iframe_resp.url
                             iframe_soup = BeautifulSoup(iframe_resp.text, "html.parser")
                             for v in iframe_soup.find_all(["video", "source"]):
                                 isrc = v.get("src") or v.get("data-src")
                                 if isrc:
-                                    add_resource(isrc, "video", "iframe_crawler")
-                            for match in media_regex.finditer(iframe_resp.text):
-                                add_resource(match.group(0), "video", "iframe_script_regex")
+                                    add_resource(isrc, "video", "iframe_crawler", base_url=iframe_base)
+                            unescaped_iframe_text = iframe_resp.text.replace(r"\/", "/")
+                            for match in media_regex.finditer(unescaped_iframe_text):
+                                f_url = match.group(0)
+                                is_str = any(urllib.parse.urlparse(f_url).path.lower().endswith(e) for e in STREAM_EXTS)
+                                add_resource(f_url, "stream" if is_str else "video", "iframe_script_regex", is_stream=is_str, base_url=iframe_base)
                     except Exception:
                         pass
 
@@ -302,17 +409,22 @@ def download_stream_with_ffmpeg(
     if not ffmpeg_bin:
         return False
 
-    headers_str = f"User-Agent: {DEFAULT_USER_AGENT}\r\n"
+    # Prevent header injection by stripping newlines
+    clean_ua = DEFAULT_USER_AGENT.replace("\r", "").replace("\n", "")
+    headers_str = f"User-Agent: {clean_ua}\r\n"
     if referer:
-        headers_str += f"Referer: {referer}\r\n"
+        clean_ref = referer.replace("\r", "").replace("\n", "").strip()
+        headers_str += f"Referer: {clean_ref}\r\n"
 
+    # Use -c copy -movflags +faststart without hardcoding -bsf:a aac_adtstoasc
+    # so non-AAC audio codecs (MP3, Opus, AC3) do not crash FFmpeg
     cmd = [
         ffmpeg_bin,
         "-y",
         "-headers", headers_str,
         "-i", stream_url,
         "-c", "copy",
-        "-bsf:a", "aac_adtstoasc",
+        "-movflags", "+faststart",
         output_path,
     ]
 

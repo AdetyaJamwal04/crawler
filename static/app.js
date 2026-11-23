@@ -406,7 +406,6 @@
   // Display direct media preview
   function displayDirectPreview(data, originalUrl, referer = "") {
     previewCard.classList.remove("hidden");
-    formatsContainer.classList.add("hidden");
 
     metaFilename.textContent = data.filename || "file";
     metaType.textContent = data.content_type || "media";
@@ -415,6 +414,23 @@
 
     if (!customFilenameInput.value.trim() && data.filename) {
       customFilenameInput.value = data.filename;
+    }
+
+    // Populate format selector if platform media formats exist
+    if (data.formats && data.formats.length > 0) {
+      formatsContainer.classList.remove("hidden");
+      formatSelect.innerHTML = "";
+      data.formats.forEach((fmt) => {
+        const opt = document.createElement("option");
+        opt.value = fmt.direct_url;
+        const note = fmt.format_note ? `[${fmt.format_note}] ` : "";
+        const typeLabel = fmt.has_video && fmt.has_audio ? "Video+Audio" : fmt.has_video ? "Video only" : "Audio only";
+        const sizeLabel = fmt.filesize ? ` (${formatBytes(fmt.filesize)})` : "";
+        opt.textContent = `${note}${fmt.ext.toUpperCase()} - ${typeLabel}${sizeLabel}`;
+        formatSelect.appendChild(opt);
+      });
+    } else {
+      formatsContainer.classList.add("hidden");
     }
 
     mediaViewport.innerHTML = "";
@@ -435,7 +451,7 @@
     } else if (type.startsWith("image/")) {
       const img = document.createElement("img");
       img.src = previewStreamUrl;
-      img.alt = data.filename;
+      img.alt = data.filename || "Preview image";
       mediaViewport.appendChild(img);
     } else {
       mediaViewport.innerHTML = `
@@ -444,7 +460,7 @@
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
             <polyline points="14 2 14 8 20 8"></polyline>
           </svg>
-          <span>Ready to download (${data.content_type})</span>
+          <span>Ready to download (${escapeHtml(data.content_type || "media")})</span>
         </div>`;
     }
 
@@ -460,7 +476,7 @@
       return;
     }
 
-    if (currentInspection && currentInspection.is_platform && formatSelect.value) {
+    if (currentInspection && currentInspection.formats && currentInspection.formats.length > 0 && formatSelect.value) {
       url = formatSelect.value;
     }
 
@@ -782,7 +798,7 @@
 
   function escapeHtml(str) {
     if (!str) return "";
-    return str
+    return String(str)
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
