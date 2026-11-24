@@ -1,7 +1,59 @@
-/* ==========================================================================
-   MediaFlow Extension Popup Styling
-   Glassmorphic dark design optimized for 420px browser popup
-   ========================================================================== */
+/* Platform Banner (YouTube / Streaming sites) */
+.platform-banner {
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.platform-banner.hidden {
+  display: none;
+}
+
+.platform-banner-content {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.platform-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.platform-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.platform-text strong {
+  color: var(--text-main);
+  font-size: 13px;
+}
+
+.btn-server {
+  background: var(--accent-gradient);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  align-self: flex-start;
+  transition: opacity 0.2s;
+}
+
+.btn-server:hover {
+  opacity: 0.9;
+}
 
 :root {
   --bg-primary: #0a0e17;

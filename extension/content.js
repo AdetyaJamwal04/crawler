@@ -11,6 +11,21 @@
     const found = [];
     const seenUrls = new Set();
 
+    function isHtmlOrPageUrl(url) {
+      if (!url) return true;
+      const lower = url.toLowerCase();
+      // Filter out iframe embed player pages, html document pages, or non-media URLs
+      if (
+        lower.includes("youtube.com/embed/") ||
+        lower.includes("youtube.com/v/") ||
+        lower.includes("youtube.com/watch") ||
+        lower.includes("player.vimeo.com/video/")
+      ) {
+        return true;
+      }
+      return false;
+    }
+
     function addCandidate(url, type, format, title, source) {
       if (!url || typeof url !== "string") return;
       url = url.trim();
@@ -23,6 +38,7 @@
         return;
       }
 
+      if (isHtmlOrPageUrl(url)) return;
       if (seenUrls.has(url)) return;
       seenUrls.add(url);
 
@@ -64,12 +80,16 @@
       });
     });
 
-    // 3. OpenGraph / Twitter meta tags
-    document.querySelectorAll('meta[property="og:video"], meta[property="og:video:url"], meta[property="og:video:secure_url"]').forEach((m) => {
-      addCandidate(m.content, "video", "MP4/Video", document.title, "OpenGraph Meta");
+    // 3. OpenGraph / Twitter meta tags (only if pointing to actual media files)
+    document.querySelectorAll('meta[property="og:video"], meta[property="og:video:url"], meta[property="og:video:secure_url"], meta[name="twitter:player:stream"]').forEach((m) => {
+      if (m.content && !isHtmlOrPageUrl(m.content)) {
+        addCandidate(m.content, "video", "MP4/Video", document.title, "OpenGraph Meta");
+      }
     });
     document.querySelectorAll('meta[property="og:audio"], meta[property="og:audio:secure_url"]').forEach((m) => {
-      addCandidate(m.content, "audio", "Audio", document.title, "OpenGraph Meta");
+      if (m.content && !isHtmlOrPageUrl(m.content)) {
+        addCandidate(m.content, "audio", "Audio", document.title, "OpenGraph Meta");
+      }
     });
 
     // 4. JSON-LD Structured Data
@@ -79,8 +99,13 @@
         const scanObj = (obj) => {
           if (!obj || typeof obj !== "object") return;
           if (obj["@type"] === "VideoObject" || obj.contentUrl || obj.embedUrl) {
-            if (obj.contentUrl) addCandidate(obj.contentUrl, "video", "Video", obj.name || document.title, "JSON-LD");
-            if (obj.embedUrl) addCandidate(obj.embedUrl, "video", "Stream", obj.name || document.title, "JSON-LD Embed");
+            if (obj.contentUrl && !isHtmlOrPageUrl(obj.contentUrl)) {
+              addCandidate(obj.contentUrl, "video", "Video", obj.name || document.title, "JSON-LD");
+            }
+            // Only add embedUrl if it directly points to a media stream or video container, not a full HTML page
+            if (obj.embedUrl && !isHtmlOrPageUrl(obj.embedUrl)) {
+              addCandidate(obj.embedUrl, "video", "Stream", obj.name || document.title, "JSON-LD Embed");
+            }
           }
           for (const k in obj) {
             if (typeof obj[k] === "object") scanObj(obj[k]);

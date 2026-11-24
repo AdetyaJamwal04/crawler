@@ -23,6 +23,11 @@
   const countAudio = document.getElementById("count-audio");
   const filterChips = document.querySelectorAll(".filter-chip");
 
+  // Platform Banner Elements
+  const platformBanner = document.getElementById("platform-banner");
+  const platformServerBtn = document.getElementById("platform-server-btn");
+  let activeTabUrl = "";
+
   // HLS Progress Elements
   const hlsCard = document.getElementById("hls-progress-card");
   const hlsMsg = document.getElementById("hls-msg");
@@ -38,6 +43,10 @@
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab) {
       activeTabId = tab.id;
+      activeTabUrl = tab.url || "";
+      if (activeTabUrl.includes("youtube.com/watch") || activeTabUrl.includes("youtu.be/")) {
+        platformBanner.classList.remove("hidden");
+      }
       loadMedia();
     }
     setupEvents();
@@ -46,6 +55,14 @@
   function setupEvents() {
     rescanBtn.addEventListener("click", scanPage);
     emptyRescanBtn.addEventListener("click", scanPage);
+
+    if (platformServerBtn) {
+      platformServerBtn.addEventListener("click", () => {
+        if (!activeTabUrl) return;
+        const serverDownloadUrl = `http://localhost:8000/api/download?url=${encodeURIComponent(activeTabUrl)}`;
+        chrome.tabs.create({ url: serverDownloadUrl });
+      });
+    }
 
     filterChips.forEach((chip) => {
       chip.addEventListener("click", () => {
@@ -90,21 +107,52 @@
     });
   }
 
-  // Actively trigger DOM scan in current tab
+  // Actively trigger DOM scan in current tab with fallback injection
   function scanPage() {
     if (!activeTabId) return;
     rescanBtn.classList.add("spinning");
-    chrome.tabs.sendMessage(activeTabId, { action: "scan_page" }, (res) => {
-      rescanBtn.classList.remove("spinning");
-      if (res && res.items) {
-        chrome.runtime.sendMessage(
-          { action: "report_media", tabId: activeTabId, items: res.items },
-          () => loadMedia()
-        );
-      } else {
-        loadMedia();
-      }
-    });
+
+    function executeScan() {
+      chrome.tabs.sendMessage(activeTabId, { action: "scan_page" }, (res) => {
+        rescanBtn.classList.remove("spinning");
+        if (chrome.runtime.lastError) {
+          // Fallback: try injecting content script dynamically if tab had not received it yet
+          if (chrome.scripting && chrome.scripting.executeScript) {
+            chrome.scripting.executeScript(
+              { target: { tabId: activeTabId }, files: ["content.js"] },
+              () => {
+                if (chrome.runtime.lastError) {
+                  loadMedia();
+                  return;
+                }
+                chrome.tabs.sendMessage(activeTabId, { action: "scan_page" }, (retryRes) => {
+                  if (retryRes && retryRes.items) {
+                    chrome.runtime.sendMessage(
+                      { action: "report_media", tabId: activeTabId, items: retryRes.items },
+                      () => loadMedia()
+                    );
+                  } else {
+                    loadMedia();
+                  }
+                });
+              }
+            );
+            return;
+          }
+        }
+
+        if (res && res.items) {
+          chrome.runtime.sendMessage(
+            { action: "report_media", tabId: activeTabId, items: res.items },
+            () => loadMedia()
+          );
+        } else {
+          loadMedia();
+        }
+      });
+    }
+
+    executeScan();
   }
 
   function updateCounts() {
@@ -223,11 +271,13 @@
         isHlsDownloading = false;
       }
     } else {
-      // Standard browser download
+      // Standard browser download with guaranteed extension and metadata
       chrome.runtime.sendMessage({
         action: "download_url",
         url: item.url,
-        filename: item.title
+        filename: item.title,
+        type: item.type || "video",
+        contentType: item.contentType || ""
       });
     }
   }

@@ -6,7 +6,24 @@ __pycache__/
 # C extensions
 *.so
 
-# Distribution / packaging
+# Downloaded test artifacts & local debug scripts
+*.htm
+*.html
+!static/*.html
+!extension/**/*.html
+*.mp4
+*.webm
+*.mkv
+*.mov
+*.avi
+*.mp3
+*.wav
+*.ogg
+*.m4a
+*.flac
+*.ts
+inspect_*.py
+test_yt_ld.py
 .Python
 build/
 develop-eggs/

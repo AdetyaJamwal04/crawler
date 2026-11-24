@@ -49,6 +49,31 @@ function classifyMediaType(url, contentType = "") {
   return null;
 }
 
+function sanitizeAndEnsureExtension(title, type = "video", contentType = "") {
+  let name = (title || "media").replace(/[\/\\:*?"<>|]/g, "_").trim();
+  const cType = (contentType || "").toLowerCase();
+  const validExts = [
+    ".mp4", ".webm", ".mkv", ".mov", ".avi", ".flv", ".m4v",
+    ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac", ".opus",
+    ".ts", ".m3u8", ".mpd"
+  ];
+  const hasExt = validExts.some((ext) => name.toLowerCase().endsWith(ext));
+  if (!hasExt) {
+    if (cType.includes("webm")) {
+      name += type === "audio" ? ".weba" : ".webm";
+    } else if (cType.includes("ogg")) {
+      name += ".ogg";
+    } else if (cType.includes("mpegurl")) {
+      name += ".ts";
+    } else if (cType.includes("audio") || type === "audio") {
+      name += ".mp3";
+    } else {
+      name += ".mp4";
+    }
+  }
+  return name;
+}
+
 // Extract clean filename from URL
 function getFilenameFromUrl(url, defaultExt = "mp4") {
   try {
@@ -135,62 +160,68 @@ function updateBadge(tabId) {
   }
 }
 
-// Listen to network response headers for media types
-chrome.webRequest.onHeadersReceived.addListener(
-  (details) => {
-    // Only inspect top-level tabs
-    if (details.tabId < 0) return;
+if (typeof chrome !== "undefined" && chrome.webRequest) {
+  // Listen to network response headers for media types
+  chrome.webRequest.onHeadersReceived.addListener(
+    (details) => {
+      // Only inspect top-level tabs
+      if (details.tabId < 0) return;
 
-    const url = details.url;
-    // Skip small images, css, scripts, data urls
-    if (url.startsWith("data:") || url.startsWith("blob:")) return;
+      const url = details.url;
+      // Skip small images, css, scripts, data urls
+      if (url.startsWith("data:") || url.startsWith("blob:")) return;
 
-    let contentType = "";
-    let contentLength = null;
+      let contentType = "";
+      let contentLength = null;
 
-    if (details.responseHeaders) {
-      for (const h of details.responseHeaders) {
-        const name = h.name.toLowerCase();
-        if (name === "content-type") contentType = h.value || "";
-        if (name === "content-length") contentLength = parseInt(h.value, 10);
+      if (details.responseHeaders) {
+        for (const h of details.responseHeaders) {
+          const name = h.name.toLowerCase();
+          if (name === "content-type") contentType = h.value || "";
+          if (name === "content-length") contentLength = parseInt(h.value, 10);
+        }
       }
-    }
 
-    const classification = classifyMediaType(url, contentType);
-    if (classification) {
-      addMediaForTab(details.tabId, {
-        url: url,
-        type: classification.type,
-        format: classification.format,
-        size: contentLength,
-        source: "Network Sniffer"
-      });
-    }
-  },
-  { urls: ["<all_urls>"] },
-  ["responseHeaders"]
-);
+      const classification = classifyMediaType(url, contentType);
+      if (classification) {
+        addMediaForTab(details.tabId, {
+          url: url,
+          type: classification.type,
+          format: classification.format,
+          contentType: contentType,
+          size: contentLength,
+          source: "Network Sniffer"
+        });
+      }
+    },
+    { urls: ["<all_urls>"] },
+    ["responseHeaders"]
+  );
+}
 
-// Clear media on tab navigation / reload
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.status === "loading") {
+if (typeof chrome !== "undefined" && chrome.tabs) {
+  // Clear media on tab navigation / reload (only on full page url changes, not soft loading status updates)
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (changeInfo.status === "loading" && changeInfo.url) {
+      tabMediaStore.delete(tabId);
+      if (storageSession) {
+        storageSession.remove(`tab_${tabId}`);
+      }
+      updateBadge(tabId);
+    }
+  });
+
+  chrome.tabs.onRemoved.addListener((tabId) => {
     tabMediaStore.delete(tabId);
     if (storageSession) {
       storageSession.remove(`tab_${tabId}`);
     }
-    updateBadge(tabId);
-  }
-});
+  });
+}
 
-chrome.tabs.onRemoved.addListener((tabId) => {
-  tabMediaStore.delete(tabId);
-  if (storageSession) {
-    storageSession.remove(`tab_${tabId}`);
-  }
-});
-
-// Messaging with popup and content script
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+if (typeof chrome !== "undefined" && chrome.runtime) {
+  // Messaging with popup and content script
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "get_tab_media") {
     const tabId = message.tabId;
     getMediaForTab(tabId).then((mediaList) => {
@@ -212,9 +243,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "download_url") {
+    const safeFilename = sanitizeAndEnsureExtension(
+      message.filename,
+      message.type || "video",
+      message.contentType || ""
+    );
     chrome.downloads.download({
       url: message.url,
-      filename: message.filename || undefined,
+      filename: safeFilename,
       saveAs: false
     }, (downloadId) => {
       sendResponse({ downloadId: downloadId, error: chrome.runtime.lastError ? chrome.runtime.lastError.message : null });
@@ -234,3 +270,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 });
+}
+
+// CommonJS export for Node testing
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    classifyMediaType,
+    getFilenameFromUrl,
+    sanitizeAndEnsureExtension
+  };
+}
