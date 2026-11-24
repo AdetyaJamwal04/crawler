@@ -6,9 +6,11 @@ A fast, zero-server browser extension that sniffs and downloads media (MP4, WebM
 
 ## ✨ Features
 - **Passive Network Sniffing**: Sniffs video/audio requests (`.mp4`, `.webm`, `.m3u8`, `.mpd`, `.mp3`) directly as pages load.
-- **Active DOM & Player Inspector**: Scans `<video>`, `<audio>`, `<source>`, OpenGraph tags, JSON-LD, and embedded player configs.
+- **Active DOM & Player Inspector**: Scans `<video>`, `<audio>`, `<source>`, OpenGraph tags, JSON-LD, and embedded player configs while automatically filtering out non-media HTML player pages.
 - **In-Browser HLS Stitcher**: Sequentially downloads `.m3u8` segment chunks with concurrency, supports AES-128 decryption, and stitches them into a `.ts` file entirely in memory with no backend server.
 - **Persistent Session State**: Maintains sniffed media across service worker sleep cycles via `chrome.storage.session`.
+- **Automatic Extension Enforcement**: Ensures media downloads always save with valid extensions (`.mp4`, `.webm`, `.mp3`) rather than generic "All Files".
+- **1-Click Local Server Bridge**: Built-in popup detection for complex streaming sites like YouTube that separate audio and video tracks, allowing 1-click downloads via the local Python server.
 - **$0 Hosting**: Runs 100% locally in the browser with zero cloud costs or infrastructure maintenance.
 
 ---

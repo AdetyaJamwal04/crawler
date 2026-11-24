@@ -64,6 +64,8 @@ Open **[http://localhost:8000](http://localhost:8000)** in your browser.
   - Intercepts live media stream requests (`.m3u8`, `.mpd`, `.mp4`, `.mp3`) as they load in your active browser tabs.
   - Automatically updates icon badge counts with detected media.
   - Persists detected media across service worker lifecycles via `chrome.storage.session`.
+  - Ensures correct file extensions (`.mp4`, `.webm`, `.mp3`) and sanitizes special characters from downloaded filenames.
+  - Features a **1-Click Server Download** bridge for complex streaming platforms (e.g. YouTube) that separate audio and video tracks into fragmented DASH streams.
 - **In-Browser HLS Stitcher (Extension)**:
   - Client-side master and media playlist parser (`extension/lib/hls-downloader.js`).
   - Fetches segmented `.m3u8` playlists and chunks concurrently with automatic retries.
@@ -93,10 +95,13 @@ Open **[http://localhost:8000](http://localhost:8000)** in your browser.
 
 ## 🧪 Testing
 
-Run the test suite covering filename sanitization, UTF-8 header formatting, static assets, crawler extraction, iframe handling, and fallback handling:
+Run the test suite covering filename sanitization, UTF-8 header formatting, static assets, crawler extraction, iframe handling, fallback handling, and extension unit tests:
 
 ```bash
-# Using pytest
+# Run Node.js extension unit tests
+node --test tests/test_extension.js
+
+# Run Python test suite with pytest
 pytest -v
 
 # Or using Python's built-in unittest runner
@@ -111,14 +116,14 @@ python3 -m unittest discover tests -v
 crawler/
 ├── extension/                 # Manifest V3 Browser Extension (Client-Side)
 │   ├── manifest.json          # Extension config & permissions
-│   ├── background.js          # Service worker: network stream sniffing & session storage
-│   ├── content.js             # Injected script: DOM & player inspection
+│   ├── background.js          # Service worker: network sniffing, extension enforcement & storage
+│   ├── content.js             # Injected script: DOM & player inspection with HTML page filtering
 │   ├── lib/
 │   │   └── hls-downloader.js  # In-browser chunk downloader, AES decryptor & stitcher
 │   ├── popup/
-│   │   ├── popup.html         # Extension popup interface
+│   │   ├── popup.html         # Extension popup interface & platform download banner
 │   │   ├── popup.css          # Dark glassmorphic styling
-│   │   └── popup.js           # Media list controller & download triggers (XSS-safe)
+│   │   └── popup.js           # Media list controller, fallback injection & download triggers
 │   ├── icons/                 # Extension toolbar icons (16, 48, 128)
 │   └── README.md              # Extension standalone guide
 ├── crawler.py                 # Python web crawler, DOM/JS regex parser & HLS muxer
@@ -135,7 +140,8 @@ crawler/
 │   └── app.js                 # Client controller & stream reader
 └── tests/
     ├── test_server.py         # Pytest & unittest server test suite
-    └── test_crawler.py        # Crawler & extraction test suite
+    ├── test_crawler.py        # Crawler & extraction test suite
+    └── test_extension.js      # Extension unit test suite (Node.js)
 ```
 
 ---
